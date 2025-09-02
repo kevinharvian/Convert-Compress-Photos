@@ -21,9 +21,9 @@ except Exception:
 # ===== PAGE =====
 st.set_page_config(page_title="Multi-ZIP → JPG & Kompres 50–150 KB", page_icon="📦", layout="wide")
 st.title("📦 Multi-ZIP / Files → JPG & Kompres 50–150 KB")
-st.caption("Konversi gambar & PDF ke JPG, kompres 50–150 KB, kualitas tajam. Hasil: 1 master ZIP berisi 1 folder: <nama_asli>_compressed.")
+st.caption("Konversi gambar & PDF ke JPG, kompres 50–150 KB, kualitas tajam. Hasil: 1 master ZIP berisi banyak folder *_compressed.")
 
-# ===== Sidebar Settings =====
+# ===== Sidebar Settings (match your Colab code defaults) =====
 with st.sidebar:
     st.header("⚙️ Pengaturan")
     SPEED_PRESET = st.selectbox("Preset kecepatan", ["fast", "balanced"], index=0)
@@ -35,7 +35,7 @@ with st.sidebar:
     SHARPEN_ON_RESIZE = st.checkbox("Sharpen ringan setelah resize", True)
     SHARPEN_AMOUNT = st.slider("Sharpen amount", 0.0, 2.0, 1.0, 0.1)
     PDF_DPI = 150 if SPEED_PRESET == "fast" else 200
-    MASTER_ZIP_NAME = st.text_input("Nama master ZIP (tanpa unik suffix)", "compressed.zip")
+    MASTER_ZIP_NAME = st.text_input("Nama master ZIP", "compressed.zip")
 
 MAX_QUALITY = 95
 MIN_QUALITY = 15
@@ -61,12 +61,13 @@ def to_rgb_flat(img: Image.Image, bg=BG_FOR_ALPHA) -> Image.Image:
     return img
 
 def save_jpg_bytes(img: Image.Image, quality: int) -> bytes:
-    # optimize/progressive = True (kualitas lebih baik pada ukuran sama)
+    # optimize/progressive = True seperti CODE 1 (kualitas lebih baik pada ukuran sama)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True, subsampling=2)
     return buf.getvalue()
 
 def try_quality_bs(img: Image.Image, target_kb: int, q_min=MIN_QUALITY, q_max=MAX_QUALITY):
+    """Full binary search kualitas (tanpa limit langkah) persis gaya CODE 1."""
     lo, hi = q_min, q_max
     best_bytes = None
     best_q = None
@@ -235,19 +236,8 @@ def process_one_file_entry(relpath: Path, raw_bytes: bytes, input_root_label: st
 
     return input_root_label, processed, skipped, outputs
 
-def add_to_master_zip(master: zipfile.ZipFile, top_folder: str, arcname: str, data: bytes):
-    master.writestr(f"{top_folder}/{arcname}", data)
-
-def unique_arcname(name: str, used: set) -> str:
-    """Pastikan nama file unik di dalam ZIP (flat)."""
-    base, ext = os.path.splitext(name)
-    cand = name
-    i = 2
-    while cand in used:
-        cand = f"{base}_{i}{ext}"
-        i += 1
-    used.add(cand)
-    return cand
+def add_to_master_zip(master: zipfile.ZipFile, top_folder: str, rel_path: str, data: bytes):
+    master.writestr(f"{top_folder}/{rel_path}", data)
 
 # ===== UI Upload & Run =====
 st.subheader("1) Upload ZIP atau File Lepas")
@@ -323,38 +313,16 @@ if run:
             done += 1
             progress.progress(min(done/total, 1.0))
 
-    # ==== Nama ZIP unik (…_1.zip, …_2.zip, dst) ====
-    if "zip_counter" not in st.session_state:
-        st.session_state.zip_counter = 0
-    st.session_state.zip_counter += 1
-
-    base_zip_name = (MASTER_ZIP_NAME.strip() or "compressed.zip")
-    stem = Path(base_zip_name).stem
-    ext = ".zip"
-    final_zip_name = f"{stem}_{st.session_state.zip_counter}{ext}"
-
-    # ==== Folder di dalam ZIP: sesuai "nama asli folder" + _compressed
-    # Ambil dari job pertama (sesuai permintaan).
-    top_folder = f"{jobs[0]['label']}_compressed"
-
-    # ==== Build master ZIP in-memory (FLAT, 1 folder saja) ====
-    used_arc = set()
+    # Build master ZIP in-memory (pendek: compressed.zip)
     master_buf = io.BytesIO()
     with zipfile.ZipFile(master_buf, "w", compression=ZIP_COMP_ALGO) as master:
-        # pastikan folder top-level ada
-        master.writestr(f"{top_folder}/", "")
         for job in jobs:
             base = job["label"]
+            top_folder = f"{base}_compressed"
+            master.writestr(f"{top_folder}/", "")
             for rel_path, *_ in summary[base]:
                 if rel_path in per_job_outputs[base]:
-                    # flatten: ambil hanya nama file (tanpa subfolder)
-                    name_only = Path(rel_path).name
-                    # jika bukan job pertama, prefiks label biar jelas & tidak tabrakan
-                    if base != jobs[0]["label"]:
-                        name_only = f"{base}_{name_only}"
-                    # pastikan unik di dalam ZIP
-                    arcname = unique_arcname(name_only, used_arc)
-                    add_to_master_zip(master, top_folder, arcname, per_job_outputs[base][rel_path])
+                    add_to_master_zip(master, top_folder, rel_path, per_job_outputs[base][rel_path])
     master_buf.seek(0)
 
     # Ringkasan
@@ -382,7 +350,7 @@ if run:
     st.download_button(
         "⬇️ Download Master ZIP",
         data=master_buf.getvalue(),
-        file_name=final_zip_name,  # unik: compressed_1.zip, compressed_2.zip, ...
+        file_name=MASTER_ZIP_NAME.strip() or "compressed.zip",
         mime="application/zip",
     )
-    st.success(f"Selesai! File siap diunduh: {final_zip_name} (folder di dalam: {top_folder}/)")
+    st.success("Selesai! Master ZIP siap diunduh.")
